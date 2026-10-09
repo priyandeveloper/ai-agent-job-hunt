@@ -2,4 +2,6 @@ typesafe-sdk>=0.7.2
 firecrawl-py>=2.0.0
 openai>=1.40.0
 strands-agents[openai]>=1.0.0
+pypdf>=5.0.0
 python-dotenv>=1.0.0
+gradio>=4.0.0

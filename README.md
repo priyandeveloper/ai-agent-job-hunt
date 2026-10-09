@@ -1,95 +1,101 @@
-# Placement Fit
+# Build an AI Agent That Hunts Jobs for You
 
-A 3-hour workshop project. Paste a resume, point at a job posting, and get a decision you can defend: **apply**, **stretch**, or **skip**. A draft is written only when the decision is apply or stretch.
+3 hours. One working agent. Real jobs.
 
-The posting is scraped with Firecrawl. Fit is scored by Jev through the TypeSafe SDK. The draft is one chat call on the FutureX key. A Strands agent can call the same scrape and score functions as tools.
+You pass a resume and a short line about what you want. A Strands agent calls two tools and stops. `scan_jobs` searches the web with Firecrawl and keeps recruiter links. `score_jobs` opens those pages, drops anything that is not a job description, and sends three of them to Jev. The chat model never sees the resume or the full job text.
+
+Jev is the fast decision model. The session blurb calls it RLCD. Same model: `jev-latest`.
+
+## The three hours
+
+| Time | What you do | What you read |
+|---|---|---|
+| 0:00–0:20 | Setup. Run the tests. | `placement/gate.py` |
+| 0:20–1:00 | Score one local posting. See apply, stretch, skip, and ask. | `placement/score.py` |
+| 1:00–1:45 | Run `hunt` with `--want`. Watch `scan_jobs`, then `score_jobs`, then stop. | `placement/agent.py` |
+| 1:45–2:25 | Tighten the URL filter or the JD check. Hunt again with your PDF. | `placement/filters.py` |
+| 2:25–2:45 | Read the cost line. Compare it with `compare` on one saved JD. | `placement/spend.py` |
+| 2:45–3:00 | Fork the repo. Do not commit `.env`. | this file |
 
 ## Layout
 
 ```
-app.py                 run this
-placement/settings.py  keys and base URLs
-placement/scrape.py    Firecrawl → posting text
-placement/gate.py      apply / stretch / skip, plain Python
-placement/score.py     Jev questions, then the gate
-placement/write.py     one chat call for the draft
-placement/agent.py     Strands tools around scrape and score
-resume.md              sample student, replace with yours
-samples/posting.md     local posting, no Firecrawl needed
+app.py                    hunt runs the Strands agent
+placement/agent.py        two tools: scan_jobs, score_jobs
+placement/filters.py      which URLs and pages count as a job
+placement/query.py        search text from resume labels plus --want
+placement/profile.py      one Jev call that picks role, level, language
+placement/scrape.py       Firecrawl search, then one page
+placement/hunt.py         the same steps written in order
+placement/score.py        Jev fit, including pay type
+placement/spend.py        time, Jev cost, chat tokens
+placement/gate.py         apply / stretch / skip / ask
+placement/resume_text.py  PDF or text in
+resume.md                 sample student
+samples/posting.md        one posting, no network
 ```
 
-`app.py` is the whole pipeline. Read it first. Each file under `placement/` is one step.
+`placement/boards.py` is a Greenhouse fallback. The hunt does not call it.
 
 ## Setup
 
-Python 3.10 or newer.
+Python 3.10 or newer. A laptop, internet, and your resume.
 
 ```powershell
-cd placement-fit
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 copy .env.example .env
 ```
 
-Fill `.env` with the campus FutureX key, the chat base URL, the Jev base URL, the chat model id, and a Firecrawl key.
+Fill `.env` with the FutureX key, the chat base URL (`/v1` included), the Jev base URL (no `/v1`), the chat model id, and a Firecrawl key. `hunt` needs `FIRECRAWL_API_KEY`.
 
-`FUTUREX_BASE_URL` includes `/v1` because the OpenAI client calls `/chat/completions`.
-`JEV_BASE_URL` does not. The TypeSafe SDK adds `/v1/systemone` itself.
-
-## Run
-
-Score the sample posting. This path does not call Firecrawl.
+Check the gate and the filters with no API calls:
 
 ```powershell
-python app.py --jd samples/posting.md
+python -m unittest tests.test_decide tests.test_filters tests.test_boards
 ```
 
-Score a live posting:
+## Commands
+
+The resume file and `--want` are the two inputs. Jev reads the resume once to pick a role, a level, and a language. Your words are appended to that search.
 
 ```powershell
-python app.py --url "https://company.example/careers/intern"
+python app.py hunt --resume resume.md --want "python intern Bengaluru"
 ```
 
-Use your own resume:
+Your own CV:
 
 ```powershell
-python app.py --jd samples/posting.md --resume my-resume.md
+python app.py hunt --resume C:\path\to\resume.pdf --want "data analyst intern remote"
 ```
 
-Hand the same steps to a Strands agent. This needs a URL.
+The run ends with time, Jev cost, and the chat tokens spent on the tool loop. Each job card shows the description, pay type, match score, and the audit (bond, experience bar, Jev's bucket next to the code decision).
+
+Score one known posting, with no search:
 
 ```powershell
-python app.py --url "https://company.example/careers/intern" --agent
+python app.py score --jd samples/posting.md
 ```
 
-Check the gate without calling any API:
+Time Jev against a chat model on that same file, with no search and no agent loop.
 
 ```powershell
-python -m unittest tests.test_decide
+python app.py compare --jd samples/posting.md
 ```
 
-## What the gate does
+## What Jev is asked
 
-Jev answers four questions about the resume and the posting:
+One call builds the search. Up to three more calls score jobs. Each score call also asks how the role is paid, so pay does not cost a second request.
 
-| Question | Type | Meaning |
+| Question | Type | The gate uses it for |
 |---|---|---|
-| `skill_overlap` | score, 0–4 | How much of the required stack is already in the resume |
-| `requires_bond` | probability | A service bond or a repay-if-you-leave clause |
-| `above_fresher` | probability | More than a year of full-time work, or a degree the resume lacks |
-| `verdict` | apply / stretch / skip | Jev's own bucket |
+| `skill_overlap` | score, 0–4 | apply, stretch, or skip |
+| `requires_bond` | probability | skip when it is high, ask when it is close |
+| `above_fresher` | probability | skip when the job wants a year or more of full-time work |
+| `pay_type` | stipend / salaried / not posted | printed on the card |
+| `verdict` | apply / stretch / skip | printed beside the code decision |
 
-`decide()` in `placement/gate.py` is the policy. A likely bond or an experience bar above a fresher becomes **skip**, even if the skill score is high. Jev's verdict is printed beside the code decision so you can see when they disagree.
+`decide()` wins when it disagrees with Jev's verdict. A cold email is a separate step: `python app.py score --url <apply-link> --draft`. The hunt itself does not write one.
 
-**skip** stops. **apply** and **stretch** go to `placement/write.py`. The writer may only use facts from the resume.
-
-## In the room
-
-1. Run the sample posting. Read `gate.py` until `decide()` is obvious.
-2. Change `BOND_SKIP` or `SKILL_APPLY` in `gate.py`, rerun `python -m unittest tests.test_decide`, then rerun the sample.
-3. Add the commented question in `score.py`, and use it inside `decide()`.
-4. Swap `resume.md` for your own and score a real URL.
-5. Run `--agent` and compare it with the linear run. The tools are the same functions.
-
-The sample student is fictional. Replace `resume.md` before you apply to anything real.
+The sample student is fictional. Replace `resume.md` before you send anything.

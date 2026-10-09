@@ -33,8 +33,8 @@ def load_settings(*, need_firecrawl: bool = False) -> Settings:
     firecrawl = os.getenv("FIRECRAWL_API_KEY", "").strip()
     if need_firecrawl and not firecrawl:
         raise SystemExit(
-            "Missing FIRECRAWL_API_KEY. A job URL needs it. "
-            "A local posting file does not: python app.py --jd samples/posting.md"
+            "Missing FIRECRAWL_API_KEY. hunt, agent, and --url need it. "
+            "A local file does not: python app.py score --jd samples/posting.md"
         )
     return Settings(
         futurex_api_key=_need("FUTUREX_API_KEY"),

@@ -24,6 +24,10 @@ class DecideTests(unittest.TestCase):
         decision, _ = decide(skill_index=1, bond=0.1, above_fresher=0.1)
         self.assertEqual(decision, "skip")
 
+    def test_near_cutoff_asks(self):
+        decision, _ = decide(skill_index=4, bond=0.58, above_fresher=0.1)
+        self.assertEqual(decision, "ask")
+
 
 if __name__ == "__main__":
     unittest.main()
