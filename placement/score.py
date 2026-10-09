@@ -1,4 +1,8 @@
-"""Ask Jev typed questions. The decision itself lives in gate.py."""
+"""Ask Jev typed questions and decide apply, stretch, or skip.
+
+gate.py is merged here: the policy constants and decide() sit next to the
+scoring code that feeds them.
+"""
 
 import re
 from dataclasses import dataclass
@@ -6,10 +10,59 @@ from dataclasses import dataclass
 from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
 
 from placement.filters import pay_amount
-from placement.gate import SKILL_LEVELS, decide
 from placement.scrape import Posting
 from placement.settings import Settings
 
+# ---------------------------------------------------------------------------
+# Decision gate
+# ---------------------------------------------------------------------------
+
+# Lowest to highest. The index is what decide() compares.
+SKILL_LEVELS = [
+    "Almost no overlap with the required skills",
+    "A few matching skills, with large gaps",
+    "Partial overlap; the candidate could contribute with support",
+    "Strong overlap with the core requirements",
+    "The resume already shows the core stack in real projects",
+]
+
+# WORKSHOP: move these and watch the same posting change buckets.
+BOND_SKIP = 0.65
+EXPERIENCE_SKIP = 0.65
+SKILL_APPLY = 3
+SKILL_STRETCH = 2
+# How close to a cutoff still counts as "ask the user".
+ASK_BAND = 0.12
+# Maximum number of postings scored per hunt.
+TOP_N = 30
+
+
+def _near_cutoff(value: float, cutoff: float) -> bool:
+    return 0 < (cutoff - value) <= ASK_BAND
+
+
+def decide(skill_index: int, bond: float, above_fresher: float) -> tuple[str, list[str]]:
+    """Turn three numbers into apply, stretch, skip, or ask.
+
+    skip and apply are confident. ask means a probability is sitting
+    next to a cutoff, so the loop should stop and wait for a person.
+    """
+    if bond >= BOND_SKIP:
+        return "skip", [f"Bond language is likely ({bond:.0%})."]
+    if above_fresher >= EXPERIENCE_SKIP:
+        return "skip", [f"The experience bar is above a fresher ({above_fresher:.0%})."]
+    if _near_cutoff(bond, BOND_SKIP) or _near_cutoff(above_fresher, EXPERIENCE_SKIP):
+        return "ask", ["A probability sits next to a cutoff. Ask before you draft."]
+    if skill_index >= SKILL_APPLY:
+        return "apply", ["The core skills show up in the resume."]
+    if skill_index >= SKILL_STRETCH:
+        return "stretch", ["Some skills match. The email should name the gap."]
+    return "skip", ["The required skills are mostly absent from the resume."]
+
+
+# ---------------------------------------------------------------------------
+# Jev scoring
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Fit:
@@ -25,21 +78,7 @@ class Fit:
     pay_type: str = "not_posted"
     pay_amount: str = ""
     input_tokens: int = 0
-
-    def report(self) -> str:
-        bar = "█" * (self.skill_index + 1) + "░" * (len(SKILL_LEVELS) - self.skill_index - 1)
-        lines = [
-            f"Code decision : {self.decision}",
-            f"Jev verdict   : {self.jev_verdict}",
-            f"Skill overlap : {bar}  {self.skill_score:.2f} → {self.skill_index}/4  {self.skill_label}",
-            f"Pay           : {self.pay_type.replace('_', ' ')}"
-            + (f"  {self.pay_amount}" if self.pay_amount else ""),
-            f"Bond likely   : {self.bond:.0%}",
-            f"Above fresher : {self.above_fresher:.0%}",
-            "Why:",
-            *[f"  - {reason}" for reason in self.reasons],
-        ]
-        return "\n".join(lines)
+    output_tokens: int = 0
 
 
 def questions() -> dict:
@@ -82,7 +121,7 @@ def questions() -> dict:
         ),
     }
 
-    # WORKSHOP: add one question, then use the answer inside decide() in gate.py.
+    # WORKSHOP: add one question, then use the answer inside decide() above.
     # Example:
     # built["onsite_far"] = Noul(
     #     instructions="The role is onsite outside Kerala and offers no relocation support.",
@@ -213,9 +252,12 @@ def score_fit(resume: str, posting: Posting, settings: Settings, want: str = "")
     note = _note(shown, missing, skill_labels)
     usage = getattr(result, "usage", None)
     raw_tokens = getattr(usage, "input_tokens", None)
+    out_tokens = getattr(usage, "output_tokens", None)
     if raw_tokens is None and isinstance(usage, dict):
         raw_tokens = usage.get("input_tokens", 0)
+        out_tokens = usage.get("output_tokens", 0)
     input_tokens = int(raw_tokens or 0)
+    output_tokens = int(out_tokens or 0)
     decision, reasons = decide(skill_index, bond, above_fresher)
 
     if jev_verdict != decision:
@@ -234,4 +276,5 @@ def score_fit(resume: str, posting: Posting, settings: Settings, want: str = "")
         pay_type=pay_type,
         pay_amount=pay_amount(posting.text),
         input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )

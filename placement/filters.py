@@ -50,9 +50,17 @@ JD_MARKERS = (
     "qualif",
     "what you",
     "about the role",
+    "about the job",
     "we are looking",
     "years of experience",
     "apply",
+    "skills",
+    "who you are",
+    "what you'll do",
+    "job description",
+    "role overview",
+    "key responsibilities",
+    "candidate",
 )
 
 _PAY = re.compile(
@@ -102,7 +110,7 @@ def looks_like_listing_title(title: str) -> bool:
 def looks_like_jd(text: str) -> bool:
     """True when the page text reads like a job description."""
     sample = text.lower()
-    return len(text) >= 400 and any(marker in sample for marker in JD_MARKERS)
+    return len(text) >= 250 and any(marker in sample for marker in JD_MARKERS)
 
 
 def company_name(url: str) -> str:
@@ -124,3 +132,34 @@ def pay_amount(text: str) -> str:
     if not match:
         return ""
     return " ".join(match.group(0).split())
+
+
+# Closure banners a portal prints on a dead posting. Checking this before Jev
+# means a filled job never costs a scoring call. (Idea from career-ops liveness.)
+CLOSED_PHRASES = (
+    "no longer available",
+    "no longer accepting applications",
+    "position has been filled",
+    "role has been filled",
+    "job has been filled",
+    "this job has expired",
+    "posting has expired",
+    "this role is closed",
+    "this position is no longer",
+    "job not found",
+    "applications are closed",
+    "no longer open",
+)
+
+
+def posting_closed(text: str) -> bool:
+    """True when the page says the job is gone. Zero tokens."""
+    sample = text.lower().replace("’", "'").replace("‘", "'")
+    return any(phrase in sample for phrase in CLOSED_PHRASES)
+
+
+def dedup_key(url: str, title: str) -> str:
+    """One key per job. The same role on Greenhouse and the company site dedups to one."""
+    company = company_name(url)
+    clean_title = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+    return f"{company}|{clean_title}"

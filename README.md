@@ -1,101 +1,150 @@
-# Build an AI Agent That Hunts Jobs for You
+# AI Job Hunt Agent
 
-3 hours. One working agent. Real jobs.
+An AI agent that finds real job postings for your resume and scores how well you fit each one.
 
-You pass a resume and a short line about what you want. A Strands agent calls two tools and stops. `scan_jobs` searches the web with Firecrawl and keeps recruiter links. `score_jobs` opens those pages, drops anything that is not a job description, and sends three of them to Jev. The chat model never sees the resume or the full job text.
+## What it does
 
-Jev is the fast decision model. The session blurb calls it RLCD. Same model: `jev-latest`.
+1. You give it a **resume** and say what you want (e.g. _"python intern Bengaluru"_)
+2. It **searches the web** for matching job postings on real company career pages
+3. It **scores each job** against your resume — skill overlap, experience level, bond risk
+4. It gives you a **ranked list**: apply, stretch, or skip — with a one-click cold email draft
 
-## The three hours
+## Why Jev?
 
-| Time | What you do | What you read |
+**Jev** is a structured decision model (served via the [TypeSafe SDK](https://typesafe.ai)). Instead of asking a chatbot _"is this job a good fit?"_ and parsing free text, Jev returns **typed answers** — a skill score (0–4), a bond probability (0.0–1.0), a verdict choice (apply/stretch/skip).
+
+This matters because:
+
+- **Deterministic** — same resume + same job = same score, every time
+- **Cheap** — Jev calls cost ~$0.00005 each (billed on input tokens only)
+- **Auditable** — every decision is a number you can inspect, not a paragraph to interpret
+
+| Where Jev is used | What it returns | Why not a chat model? |
 |---|---|---|
-| 0:00–0:20 | Setup. Run the tests. | `placement/gate.py` |
-| 0:20–1:00 | Score one local posting. See apply, stretch, skip, and ask. | `placement/score.py` |
-| 1:00–1:45 | Run `hunt` with `--want`. Watch `scan_jobs`, then `score_jobs`, then stop. | `placement/agent.py` |
-| 1:45–2:25 | Tighten the URL filter or the JD check. Hunt again with your PDF. | `placement/filters.py` |
-| 2:25–2:45 | Read the cost line. Compare it with `compare` on one saved JD. | `placement/spend.py` |
-| 2:45–3:00 | Fork the repo. Do not commit `.env`. | this file |
+| **Resume profiling** | role family, level, language | Structured choices, not a paragraph |
+| **Job scoring** | skill overlap (0–4), bond probability, experience bar, pay type, verdict | Numbers feed a deterministic gate — no prompt hacking |
 
-## Layout
+The **chat model** (GPT-4o etc.) only drives the Strands agent loop and drafts the cold email. It never sees the full resume or scores jobs.
 
-```
-app.py                    hunt runs the Strands agent
-placement/agent.py        two tools: scan_jobs, score_jobs
-placement/filters.py      which URLs and pages count as a job
-placement/query.py        search text from resume labels plus --want
-placement/profile.py      one Jev call that picks role, level, language
-placement/scrape.py       Firecrawl search, then one page
-placement/hunt.py         the same steps written in order
-placement/score.py        Jev fit, including pay type
-placement/spend.py        time, Jev cost, chat tokens
-placement/gate.py         apply / stretch / skip / ask
-placement/resume_text.py  PDF or text in
-resume.md                 sample student
-samples/posting.md        one posting, no network
+## Architecture
+
+```mermaid
+flowchart LR
+    R["📄 Resume"] --> JEV1["Jev: profile resume"]
+    W["✏️ What you want"] --> JEV1
+    JEV1 --> SEARCH["🔍 Firecrawl: search + scrape"]
+    SEARCH --> FILTER["🧹 Filter: real JDs only"]
+    FILTER --> JEV2["⚖️ Jev: score each job"]
+    JEV2 --> DECIDE["✅ decide: apply / stretch / skip"]
+    DECIDE --> OUT["📊 Ranked results + cold email"]
 ```
 
-`placement/boards.py` is a Greenhouse fallback. The hunt does not call it.
+**Two agent tools, then it stops:**
+
+- **`scan_jobs`** — searches the web, keeps only recruiter pages (Greenhouse, Lever, Ashby, company sites), deduplicates, and ranks by keyword match. Zero model tokens.
+- **`score_jobs`** — scrapes each page, drops dead postings, asks Jev to score the survivors, then `decide()` maps scores to apply/stretch/skip.
+
+## Project structure
+
+```
+app.py                    CLI entry point
+gradio_app.py             Gradio web UI
+placement/
+  __init__.py             resume loader (PDF / md / txt)
+  agent.py                Strands agent with two tools
+  hunt.py                 search → scrape → score pipeline + ranking
+  score.py                Jev scoring + decide() gate
+  profile.py              Jev resume profiling + search query builder
+  scrape.py               Firecrawl search and page scrape
+  filters.py              URL / title / JD heuristics
+  cache.py                local cache for pages and scores
+  settings.py             env config
+  spend.py                cost and token tracking
+  write.py                cold email draft
+resume.md                 sample resume (fictional)
+```
 
 ## Setup
 
-Python 3.10 or newer. A laptop, internet, and your resume.
+Requires Python 3.10+.
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
+python -m venv venv
+venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 copy .env.example .env
 ```
 
-Fill `.env` with the FutureX key, the chat base URL (`/v1` included), the Jev base URL (no `/v1`), the chat model id, and a Firecrawl key. `hunt` needs `FIRECRAWL_API_KEY`.
+Fill in `.env`:
 
-Check the gate and the filters with no API calls:
+| Variable | What |
+|---|---|
+| `FUTUREX_API_KEY` | One key for both the chat model and Jev |
+| `FUTUREX_BASE_URL` | OpenAI-compatible root, including `/v1` |
+| `JEV_BASE_URL` | TypeSafe root, no `/v1` (the SDK appends it) |
+| `JEV_MODEL` | Defaults to `jev-latest` |
+| `CHAT_MODEL` | Chat model id served by the gateway |
+| `FIRECRAWL_API_KEY` | From [firecrawl.dev](https://firecrawl.dev) |
 
-```powershell
-python -m unittest tests.test_decide tests.test_filters tests.test_boards
-```
-
-## Commands
-
-The resume file and `--want` are the two inputs. Jev reads the resume once to pick a role, a level, and a language. Your words are appended to that search.
-
-```powershell
-python app.py hunt --resume resume.md --want "python intern Bengaluru"
-```
-
-Your own CV:
+## Usage
 
 ```powershell
-python app.py hunt --resume C:\path\to\resume.pdf --want "data analyst intern remote"
+# Hunt with the sample resume
+python app.py --want "python intern Bengaluru"
+
+# Hunt with your own CV
+python app.py --resume path\to\resume.pdf --want "data analyst intern remote"
+
+# Run the web UI
+python gradio_app.py
 ```
 
-The run ends with time, Jev cost, and the chat tokens spent on the tool loop. Each job card shows the description, pay type, match score, and the audit (bond, experience bar, Jev's bucket next to the code decision).
+### Example output
 
-Score one known posting, with no search:
+```
+6 jobs
+ #  match  role
+ 1   90%  Weekday - Software Engineer Intern
+    weekdayworks  https://jobs.lever.co/weekdayworks/a86efff4-...
+ 2   45%  Backend Software Engineer - Python/Postgres [Remote / Global]
+    enveritas  https://job-boards.greenhouse.io/enveritas/jobs/4006514008
 
-```powershell
-python app.py score --jd samples/posting.md
+This hunt
+  time: 38.9s
+  Jev calls: 7
+  Jev input tokens: 11660
+  Jev cost: $0.000490
+  Cache hits: 0
 ```
 
-Time Jev against a chat model on that same file, with no search and no agent loop.
+### Caching
 
-```powershell
-python app.py compare --jd samples/posting.md
+Run the same hunt twice — the second run serves from `.cache/` and finishes in seconds:
+
+```
+  time: 11.4s
+  Jev calls: 1        (profile only)
+  Jev cost: $0.000034
+  Cache hits: 12
 ```
 
-## What Jev is asked
+Scores are keyed by job URL + resume + want text. Edit any of them and it re-scores honestly. Delete `.cache/` to start fresh.
 
-One call builds the search. Up to three more calls score jobs. Each score call also asks how the role is paid, so pay does not cost a second request.
+## How scoring works
 
-| Question | Type | The gate uses it for |
+One Jev call profiles the resume. One Jev call per surviving job scores it.
+
+| Question | Type | What it decides |
 |---|---|---|
-| `skill_overlap` | score, 0–4 | apply, stretch, or skip |
-| `requires_bond` | probability | skip when it is high, ask when it is close |
-| `above_fresher` | probability | skip when the job wants a year or more of full-time work |
-| `pay_type` | stipend / salaried / not posted | printed on the card |
-| `verdict` | apply / stretch / skip | printed beside the code decision |
+| `skill_overlap` | Score 0–4 | Core gate: apply (3+), stretch (2+), or skip |
+| `requires_bond` | Probability | Skip if > 65% — protects students from bond traps |
+| `above_fresher` | Probability | Skip if > 65% — the role needs 1+ years experience |
+| `pay_type` | Choice | Stipend / salaried / not posted — shown in results |
+| `verdict` | Choice | Jev's own apply/stretch/skip — printed alongside the code decision |
 
-`decide()` wins when it disagrees with Jev's verdict. A cold email is a separate step: `python app.py score --url <apply-link> --draft`. The hunt itself does not write one.
+`decide()` is deterministic and **overrides** Jev's verdict when they disagree. A bond or experience bar skips the job no matter how strong the skills are.
 
-The sample student is fictional. Replace `resume.md` before you send anything.
+## Notes
+
+- `resume.md` is a fictional sample student. Replace it before hunting for real.
+- Firecrawl's free plan allows 10 scrapes per minute; the agent stops cleanly on a 429.

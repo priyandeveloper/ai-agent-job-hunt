@@ -50,13 +50,15 @@ def score_jobs() -> str:
         return "No links yet. Call scan_jobs first."
     if session.get("scored") is not None:
         return "Already scored. Stop and recap the shortlist."
-    postings = scrape_top(hits, session["settings"], session["spend"])
+    target_limit = session.get("limit", 20)
+    postings = scrape_top(hits, session["settings"], session["spend"], limit=target_limit)
     scored = evaluate(
         session["resume"],
         session["want"],
         session["settings"],
         postings,
         session["spend"],
+        limit=target_limit,
     )
     session["scored"] = scored
     if not scored:
@@ -76,11 +78,11 @@ def _chat_tokens(metrics: object) -> tuple[int, int]:
     return int(chat_in or 0), int(chat_out or 0)
 
 
-def run_agent(resume: str, settings: Settings, want: str = "") -> tuple[list[ScoredJob], Spend, int, int]:
-    spend = Spend()
+def run_agent(resume: str, settings: Settings, want: str = "", limit: int = 20) -> tuple[list[ScoredJob], Spend, int, int]:
+    spend = Spend(chat_model=settings.chat_model, jev_model=settings.jev_model)
     looking_for = want.strip()
     profile = profile_resume(resume, settings, looking_for)
-    spend.add_jev(profile.input_tokens)
+    spend.add_jev(profile.input_tokens, getattr(profile, "output_tokens", 0))
     print(f"Search: {profile.query}")
     _SESSION.clear()
     _SESSION.update(
@@ -89,6 +91,7 @@ def run_agent(resume: str, settings: Settings, want: str = "") -> tuple[list[Sco
         query=profile.query,
         settings=settings,
         spend=spend,
+        limit=limit,
         hits=None,
         scored=None,
     )
@@ -116,6 +119,9 @@ def run_agent(resume: str, settings: Settings, want: str = "") -> tuple[list[Sco
     print(str(result).strip())
     scored = _SESSION.get("scored") or []
     print_shortlist(scored)
+
+    # Ingest real response telemetry, cycle traces, and token usage from AgentResult metrics
+    spend.record_agent_metrics(result.metrics)
     chat_in, chat_out = _chat_tokens(result.metrics)
     print()
     print(spend.report(chat_in, chat_out))
